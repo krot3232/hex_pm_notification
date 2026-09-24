@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Fake curl for tests: serves fixtures from $FAKE_HEX_DIR and
+# appends request arguments to $FAKE_HEX_LOG and $FAKE_TG_LOG.
+# Like real curl, HTTP errors give exit code 22 only with -f/--fail/--fail-with-body,
+# and "-w" expands %{http_code} and \n.
+# FAKE_TG_FAIL=1 - Telegram responds with error 400 and a description.
+# FAKE_TG_NETWORK_FAIL=1 - the Telegram request fails before any response (exit 7).
+# FAKE_CURL_OLD=1 - behave like curl < 7.76, which does not know --fail-with-body.
+# FAKE_KILL_ON=<package> - kill the whole process group when this package is requested
+# (the test must run the script via setsid).
+# FAKE_BLOCK_ON=<package> - block on this package until $FAKE_RELEASE_FILE
+# exists or its directory is removed by teardown (gives up after 10 seconds
+# so a broken test cannot hang).
+url="${!#}"
+
+fail=0
+fail_with_body=0
+write_out=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    --fail-with-body)
+      if [[ "${FAKE_CURL_OLD:-0}" == "1" ]]; then
+        echo "curl: option --fail-with-body: is unknown" >&2
+        exit 2
+      fi
+      fail=1
+      fail_with_body=1
+      ;;
+    -f | --fail | -f?*) fail=1 ;;
+    -w | --write-out) write_out="${args[i + 1]}" ;;
+  esac
+done
+
+# Prints the body, then the expanded -w string; exits like curl for the given HTTP code.
+# Plain -f suppresses all output on an HTTP error, --fail-with-body keeps the body.
+respond() {
+  local code="$1" body="$2"
+  if ((code >= 400 && fail)); then
+    ((fail_with_body)) && printf '%s\n' "$body"
+    exit 22
+  fi
+  printf '%s\n' "$body"
+  if [[ -n "$write_out" ]]; then
+    printf '%b' "${write_out//%\{http_code\}/$code}"
+  fi
+  exit 0
+}
+
+case "$url" in
+  */packages/*)
+    package="${url##*/}"
+    printf '%s\n' "$@" >>"$FAKE_HEX_LOG"
+    [[ -n "${FAKE_KILL_ON:-}" && "$package" == "$FAKE_KILL_ON" ]] && kill -KILL 0
+    if [[ -n "${FAKE_BLOCK_ON:-}" && "$package" == "$FAKE_BLOCK_ON" ]]; then
+      for _ in {1..200}; do
+        [[ -e "$FAKE_RELEASE_FILE" || ! -d "${FAKE_RELEASE_FILE%/*}" ]] && break
+        sleep 0.05
+      done
+    fi
+    file="$FAKE_HEX_DIR/$package.json"
+    if [[ -f "$file" ]]; then
+      respond 200 "$(cat "$file")"
+    fi
+    respond 404 '{"status":404,"message":"Page not found"}'
+    ;;
+  */sendMessage)
+    printf '%s\n' "$@" >>"$FAKE_TG_LOG"
+    if [[ "${FAKE_TG_NETWORK_FAIL:-0}" == "1" ]]; then
+      echo "curl: (7) Failed to connect to api.telegram.org port 443" >&2
+      exit 7
+    fi
+    if [[ "${FAKE_TG_FAIL:-0}" == "1" ]]; then
+      respond 400 '{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}'
+    fi
+    respond 200 '{"ok":true}'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
