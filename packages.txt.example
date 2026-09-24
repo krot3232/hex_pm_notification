@@ -1,0 +1,4 @@
+# hex.pm packages, one per line
+phoenix
+ecto
+cowboy

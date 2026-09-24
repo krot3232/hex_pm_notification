@@ -1,0 +1,10 @@
+# Copy to hex_pm_notification.conf - the script sources it.
+# The file holds the token and is executed as code: chmod 600 hex_pm_notification.conf
+#
+# Uncomment what you need. An uncommented assignment overrides
+# the environment variable of the same name, even with an empty value.
+# TELEGRAM_BOT_TOKEN="123456:ABC..."
+# TELEGRAM_CHAT_ID="123456789"
+# INCLUDE_PRERELEASE=1
+# PACKAGES_FILE=/path/to/packages.txt
+# STATE_FILE=/path/to/state.txt
