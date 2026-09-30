@@ -14,6 +14,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/hex_pm_notification.conf}"
 if [[ -f "$CONFIG_FILE" ]]; then
