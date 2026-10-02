@@ -29,6 +29,8 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 HEX_API_URL="${HEX_API_URL:-https://hex.pm/api}"
 TELEGRAM_API_URL="${TELEGRAM_API_URL:-https://api.telegram.org}"
+USER_AGENT="${USER_AGENT:-hex_pm_notification/1.0}"
+RATE_LIMIT_DELAY="${RATE_LIMIT_DELAY:-0.6}"
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"
@@ -42,7 +44,7 @@ err() {
 # --retry covers network failures, 5xx and 429 (hex.pm limit is 100 requests per minute)
 fetch_latest_version() {
   local package="$1" json filter
-  json="$(curl -fsS -m 30 --retry 3 -H 'Accept: application/json' "$HEX_API_URL/packages/$package")" || return 1
+  json="$(curl -fsS -m 30 --connect-timeout 10 --retry 3 --retry-delay 2 -A "$USER_AGENT" -H 'Accept: application/json' "$HEX_API_URL/packages/$package")" || return 1
   if [[ "$INCLUDE_PRERELEASE" == "1" ]]; then
     filter='.latest_version // empty'
   else
@@ -58,16 +60,17 @@ send_telegram() {
   response="$(exec 9>&-; curl -sS -m 30 -w '\n%{http_code}' \
     --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
     --data-urlencode "text=$text" \
-    --data-urlencode "disable_web_page_preview=true" \
+    --data-urlencode "parse_mode=HTML" \
+    --data-urlencode 'link_preview_options={"is_disabled": true}' \
     "$TELEGRAM_API_URL/bot$TELEGRAM_BOT_TOKEN/sendMessage")" || return 1
   status="${response##*$'\n'}"
   body="${response%$'\n'*}"
-  if [[ "$status" != 2?? ]]; then
-    # Telegram description =error
+  if [[ "$status" != 2?? ]] || ! jq -e '.ok == true' <<<"$body" >/dev/null 2>&1; then
     description="$(jq -r '.description // empty' <<<"$body" 2>/dev/null || true)"
     err "telegram: HTTP $status${description:+: $description}"
     return 1
   fi
+  return 0
 }
 
 version_gt() {
@@ -94,8 +97,9 @@ save_state() {
 notify() {
   local package="$1" old="$2" new="$3" text
   # 📦 = EMOJI_PACKAGE
-  text="📦 $package: $old → $new
-https://hex.pm/packages/$package/$new"
+  text="&#128230; <b>${package}</b>: <code>${old}</code> → <code>${new}</code>
+https://hex.pm/packages/${package}/${new}
+#${package}"
   log "NEW $package $old -> $new"
   send_telegram "$text"
 }
@@ -123,6 +127,13 @@ main() {
     err "packages file not found: $PACKAGES_FILE"
     return 1
   fi
+  
+  if [[ -n "$TELEGRAM_BOT_TOKEN" && -z "$TELEGRAM_CHAT_ID" ]] ||
+   [[ -z "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]]; then
+  err "set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or leave both empty"
+  return 1
+  fi
+  
   exec 9>"$STATE_FILE.lock"
   if ! flock -n 9; then
     err "another instance is running"
@@ -146,6 +157,14 @@ main() {
     package="${line%%#*}"
     package="$(trim "$package")"
     [[ -z "$package" ]] && continue
+
+    if [[ ! "$package" =~ ^[a-z0-9_]+$ ]]; then
+      err "invalid package name format: '$package'"
+      failed=1
+      continue
+    fi
+
+    sleep "$RATE_LIMIT_DELAY"
 
     if ! latest="$(exec 9>&-; fetch_latest_version "$package")"; then
       err "failed to fetch $package"
